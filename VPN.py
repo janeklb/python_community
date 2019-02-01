@@ -3,7 +3,8 @@
 Connect or disconnect from a network manager VPN profile"""
 
 
-import subprocess
+import dbus
+import time
 from collections import namedtuple
 from albertv0 import *
 from shutil import which
@@ -23,17 +24,41 @@ if not iconPath:
 
 VPNConnection = namedtuple('VPNConnection', ['name', 'connected'])
 
+class Timer:    
+    def __init__(self, label):
+        self.label = label
+
+    def __enter__(self):
+        self.start = time.clock()
+        return self
+
+    def __exit__(self, *args):
+        self.end = time.clock()
+        self.interval = self.end - self.start
+        info('%s took %.03f seconds' % (self.label, self.interval))
+
+
+bus = dbus.SystemBus()
+service_name = "org.freedesktop.NetworkManager"
+proxy = bus.get_object(service_name, "/org/freedesktop/NetworkManager/Settings")
+settings = dbus.Interface(proxy, "org.freedesktop.NetworkManager.Settings")
+connection_paths = settings.ListConnections()
+
 
 def getVPNConnections():
-    consStr = subprocess.check_output(
-        'nmcli -t connection show',
-        shell=True,
-        encoding='UTF-8'
-    )
-    for conStr in consStr.splitlines():
-        con = conStr.split(':')
-        if con[2] == 'vpn':
-            yield VPNConnection(name=con[0], connected=con[3] != '')
+    for path in connection_paths:
+        with Timer('bus.get_object'):
+            con_proxy = bus.get_object(service_name, path)
+        with Timer('dbus.Interface'):
+            settings_connection = dbus.Interface(con_proxy, "org.freedesktop.NetworkManager.Settings.Connection")
+        with Timer('settings_connection.GetSettings()'):
+            config = settings_connection.GetSettings()
+        connection = config['connection']
+        if connection['type'] == 'vpn':
+            yield VPNConnection(
+                name=connection['id'],
+                connected='timestamp' in connection
+            )    
 
 
 def buildItem(con):
@@ -58,7 +83,8 @@ def initialize():
 
 def handleQuery(query):
     if query.isValid and query.isTriggered:
-        connections = getVPNConnections()
+        with Timer('getVPNConnections'):
+            connections = getVPNConnections()
         if query.string:
             connections = [ con for con in connections if query.string.lower() in con.name.lower() ]
         return [ buildItem(con) for con in connections ]
